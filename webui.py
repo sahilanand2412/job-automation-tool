@@ -1,3 +1,5 @@
+#python webui.py --ip 127.0.0.1 --port 7788    for runnning
+
 import pdb
 import logging
 
@@ -13,6 +15,8 @@ import os
 logger = logging.getLogger(__name__)
 
 import gradio as gr
+from db import get_collection, get_fs  # Import database connection functions
+
 
 from browser_use.agent.service import Agent
 from playwright.async_api import async_playwright
@@ -35,6 +39,54 @@ from gradio.themes import Citrus, Default, Glass, Monochrome, Ocean, Origin, Sof
 from src.utils.default_config_settings import default_config, load_config_from_file, save_config_to_file, save_current_config, update_ui_from_config
 from src.utils.utils import update_model_dropdown, get_latest_files, capture_screenshot
 
+import bcrypt
+os.environ["GRADIO_TEMP_DIR"] = "/tmp"
+collection = get_collection()
+fs = get_fs()
+
+def update_task(username, password, resume):
+    # return f"go to LinkedIn and login with {username} and {password}"
+    if resume is not None:
+        resume_path = resume.name  # Get the filename of the uploaded resume
+    else:
+        resume_path = "No resume uploaded"
+
+    return f"""Go to LinkedIn and login with:
+    - Username: {username}
+    - Password: {password}
+    
+    Then, use the resume ({resume_path}) to apply for Software Developer jobs on LinkedIn."""
+
+#Hashing Password before Saving
+def hash_password(password):
+    salt = bcrypt.gensalt()
+    hashed = bcrypt.hashpw(password.encode('utf-8'), salt)
+    return hashed
+# Function to handle form submission
+def store_data(username, password, resume):
+    hashed_pw = hash_password(password)
+    if not username or not password or not resume:
+        return "All fields are required!"
+    
+    # Check if user already exists
+    existing_user = collection.find_one({"username": username})
+    if existing_user:
+        return "Username already exists. Choose another."
+
+    # Read the resume file
+    with open(resume, "rb") as file:
+        resume_id = fs.put(file, filename=os.path.basename(resume))  # Store in GridFS
+
+    # Store user details in MongoDB
+    user_data = {
+        "username": username,
+        "password": hashed_pw.decode('utf-8'),  # Store as string
+        "resume_id": resume_id,
+        "resume_filename": os.path.basename(resume)
+    }
+    collection.insert_one(user_data)
+
+    return f"User {username} registered successfully with Resume {os.path.basename(resume)}!"
 
 # Global variables for persistence
 _global_browser = None
@@ -667,13 +719,13 @@ def create_ui(config, theme_name="Ocean"):
     """
 
     with gr.Blocks(
-            title="Browser Use WebUI", theme=theme_map[theme_name], css=css
+            title="AI-Powered Job Application Automation System", theme=theme_map[theme_name], css=css
     ) as demo:
         with gr.Row():
             gr.Markdown(
                 """
-                # 🌐 Browser Use WebUI
-                ### Control your browser with AI assistance
+                ## 💼 AI-Powered Job Application Automation System
+                ### Automatically format your resume and apply for jobs on LinkedIn using AI
                 """,
                 elem_classes=["header-text"],
             )
@@ -823,22 +875,38 @@ def create_ui(config, theme_name="Ocean"):
                     )
 
             with gr.TabItem("🤖 Run Agent", id=4):
+                with gr.Row():
+                    username_input = gr.Textbox(label="Username")
+                    password_input = gr.Textbox(label="Password", type="password")
                 task = gr.Textbox(
                     label="Task Description",
                     lines=4,
                     placeholder="Enter your task here...",
-                    value=config['task'],
+                    # value=config['task'],
+                    value="",
                     info="Describe what you want the agent to do",
                 )
+
                 add_infos = gr.Textbox(
                     label="Additional Information",
                     lines=3,
                     placeholder="Add any helpful context or instructions...",
                     info="Optional hints to help the LLM complete the task",
                 )
+                #
+                gr.Markdown("### <div style='text-align: center;'>Enter Your Details for Resume Storage</div>")
 
+                
+                # with gr.Row():
+                resume = gr.File(label="Upload Resume (PDF)", file_types=[".pdf"])  # Accept PDF files only
+                store_button = gr.Button("💾 Save Credentials & Resume", variant="primary")
+                store_status = gr.Textbox(label="Status", interactive=False)  # Displays success/error messages
+                generate_task_button = gr.Button("🔄 Generate Task")
+                
+                #
+                
                 with gr.Row():
-                    run_button = gr.Button("▶️ Run Agent", variant="primary", scale=2)
+                    run_button = gr.Button("▶️ Run Agent", variant="primary", scale=1)
                     stop_button = gr.Button("⏹️ Stop", variant="stop", scale=1)
                     
                 with gr.Row():
@@ -846,6 +914,16 @@ def create_ui(config, theme_name="Ocean"):
                         value="<h1 style='width:80vw; height:50vh'>Waiting for browser session...</h1>",
                         label="Live Browser View",
                 )
+                #
+                store_button.click(fn=store_data, inputs=[username_input, password_input, resume], outputs=[store_status])
+                # Step 3: Update task dynamically when credentials change
+                username_input.change(update_task, inputs=[username_input, password_input], outputs=task)
+                password_input.change(update_task, inputs=[username_input, password_input], outputs=task)
+                resume.change(update_task, inputs=[username_input, password_input, resume], outputs=task)
+
+                # Step 4: Allow manual update with a button
+                generate_task_button.click(update_task, inputs=[username_input, password_input, resume], outputs=task)
+                #
             
             with gr.TabItem("🧐 Deep Research", id=5):
                 research_task_input = gr.Textbox(label="Research Task", lines=5, value="Compose a report on the use of Reinforcement Learning for training Large Language Models, encompassing its origins, current advancements, and future prospects, substantiated with examples of relevant models and techniques. The report should reflect original insights and analysis, moving beyond mere summarization of existing literature.")
