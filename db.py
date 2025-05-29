@@ -3,6 +3,8 @@ import gridfs
 from pymongo import MongoClient
 
 # MongoDB Connection
+import os
+
 MONGO_URI = os.environ.get('MONGO_URI')
 client = MongoClient(MONGO_URI)
 db = client["job_application"]
